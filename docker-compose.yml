@@ -11,6 +11,10 @@ services:
       REDIS_PORT: 6379
       REDIS_DB: 0
       REDIS_PASSWORD: "${REDIS_PASSWORD}"
+      REDIS2_HOST: "redis"
+      REDIS2_PORT: 6379
+      REDIS2_DB: 0
+      REDIS2_PASSWORD: "${REDIS_PASSWORD}"
       TIMESCALEDB_HOST: "timescaledb"
       TIMESCALEDB_PORT: 5432
       TIMESCALEDB_USER: "postgres"

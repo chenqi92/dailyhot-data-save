@@ -6,7 +6,7 @@ import json
 import redis
 import psycopg2
 from psycopg2 import sql
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import re
 
@@ -25,6 +25,10 @@ TIMESCALEDB_PORT = int(os.getenv('TIMESCALEDB_PORT', 5432))
 TIMESCALEDB_USER = os.getenv('TIMESCALEDB_USER', 'postgres')
 TIMESCALEDB_PASSWORD = os.getenv('TIMESCALEDB_PASSWORD', 'password')
 TIMESCALEDB_DB = os.getenv('TIMESCALEDB_DB', 'postgres')
+REDIS2_HOST = os.getenv('REDIS2_HOST', 'localhost')
+REDIS2_PORT = int(os.getenv('REDIS2_PORT', 6379))
+REDIS2_DB = int(os.getenv('REDIS2_DB', 0))
+REDIS2_PASSWORD = os.getenv('REDIS2_PASSWORD', '')
 
 # Redis 缓存键
 ROUTES_CACHE_KEY = 'allbs:routes_cache'
@@ -42,6 +46,21 @@ try:
     logging.info("Connected to Redis")
 except redis.exceptions.RedisError as e:
     logging.error(f"Redis connection error: {e}")
+    exit(1)
+
+# 初始化第二个 Redis 连接
+try:
+    redis_client2 = redis.Redis(
+        host=REDIS2_HOST,
+        port=REDIS2_PORT,
+        db=REDIS2_DB,
+        password=REDIS2_PASSWORD,
+        decode_responses=True
+    )
+    redis_client2.ping()
+    logging.info("Connected to second Redis")
+except redis.exceptions.RedisError as e:
+    logging.error(f"Second Redis connection error: {e}")
     exit(1)
 
 # 初始化 TimescaleDB 连接
@@ -190,6 +209,21 @@ def cache_in_redis_sorted_set(key, data_list):
 
         redis_client.expire(key, 3600)
         logging.info(f"Cached {len(data_list)} items in Redis sorted set with key: {key}")
+
+        # 下面新增往第二个 Redis 存储的逻辑，与第一个保持一致
+        try:
+            redis_client2.delete(key)
+            pipeline2 = redis_client2.pipeline()
+            for item in data_list:
+                timestamp = item.get('timestamp', 0)
+                member = json.dumps(item, ensure_ascii=False)
+                pipeline2.zadd(key, {member: timestamp})
+            pipeline2.execute()
+
+            redis_client2.expire(key, 3600)
+            logging.info(f"Cached {len(data_list)} items in second Redis sorted set with key: {key}")
+        except redis.exceptions.RedisError as e:
+            logging.error(f"Error caching data in second Redis: {e}")
     except redis.exceptions.RedisError as e:
         logging.error(f"Error caching data in Redis: {e}")
 
@@ -269,13 +303,15 @@ def process_routes_periodic():
             logging.warning(f"No updateTime found in data for {name}")
             continue
         try:
-            update_time = datetime.fromisoformat(update_time_str.replace('Z', '+00:00'))
+            update_time = datetime.fromisoformat(update_time_str.replace('Z', '+00:00')) + timedelta(hours=8)
         except ValueError as e:
             logging.error(f"Invalid updateTime format for {name}: {update_time_str}")
             continue
 
         # 处理 data 列表并插入到 TimescaleDB
         for index, item in enumerate(data_list):
+            # 调整 item_timestamp，补上 8 小时
+            item["timestamp"] = item.get("timestamp", 0) + (8 * 3600)
             insert_into_timescaledb(table_name, update_time, item, index)
 
 def initialize():
