@@ -187,6 +187,8 @@ def cache_in_redis_sorted_set(key, data_list):
             member = json.dumps(item, ensure_ascii=False)
             pipeline.zadd(key, {member: timestamp})
         pipeline.execute()
+
+        redis_client.expire(key, 3600)
         logging.info(f"Cached {len(data_list)} items in Redis sorted set with key: {key}")
     except redis.exceptions.RedisError as e:
         logging.error(f"Error caching data in Redis: {e}")
