@@ -1,5 +1,5 @@
 # 使用官方 Python 基础镜像
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 # 设置工作目录
 WORKDIR /app
@@ -11,8 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制应用代码
 COPY app.py .
 
-# 设置默认环境变量（可在 docker-compose 或 docker run 时覆盖）
-ENV API_URL=http://192.168.0.120:6688/all
+# 设置默认环境变量（可以在 docker-compose 或 docker run 时覆盖）
+ENV API_URL=http://127.0.0.1:6688
 ENV REDIS_HOST=redis
 ENV REDIS_PORT=6379
 ENV REDIS_DB=0
@@ -20,7 +20,7 @@ ENV REDIS_PASSWORD=your_redis_password
 ENV TIMESCALEDB_HOST=timescaledb
 ENV TIMESCALEDB_PORT=5432
 ENV TIMESCALEDB_USER=postgres
-ENV TIMESCALEDB_PASSWORD=yourpassword
+ENV TIMESCALEDB_PASSWORD=your_timescaledb_password
 ENV TIMESCALEDB_DB=postgres
 
 # 启动应用
