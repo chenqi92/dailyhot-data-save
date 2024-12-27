@@ -15,7 +15,7 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 # 读取环境变量
-API_URL = os.getenv('API_URL', 'http://192.168.0.120:6688/all')
+API_URL = os.getenv('API_URL', 'http://192.168.0.120:6688')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_DB = int(os.getenv('REDIS_DB', 0))
@@ -68,7 +68,7 @@ def fetch_all_routes():
     获取 /all 接口的数据
     """
     try:
-        response = requests.get(API_URL, timeout=10)
+        response = requests.get(API_URL + "/all", timeout=10)
         response.raise_for_status()
         data = response.json()
         if data.get("code") == 200:
@@ -245,7 +245,7 @@ def process_routes_periodic():
         key = path.lstrip('/')
 
         # 构建具体请求的 URL
-        request_url = f"http://192.168.0.120:6688{path}"
+        request_url = f"{API_URL}{path}"
         logging.info(f"Fetching data from {request_url}")
 
         try:
