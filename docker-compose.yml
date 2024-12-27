@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    env_file:
+      - .env
+    environment:
+      API_URL: "http://192.168.0.120:6688/all"
+      REDIS_HOST: "redis"
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"  # 从 .env 文件中读取
+      TIMESCALEDB_HOST: "timescaledb"
+      TIMESCALEDB_PORT: 5432
+      TIMESCALEDB_USER: "postgres"
+      TIMESCALEDB_PASSWORD: "${TIMESCALEDB_PASSWORD}"
+      TIMESCALEDB_DB: "postgres"
+    depends_on:
+      - redis
+      - timescaledb
+volumes:
+  redis-data:
+  timescaledb-data:
