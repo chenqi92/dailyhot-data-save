@@ -4,3 +4,6 @@
 同时将最新的一条热搜数据以平台为key储存至redis中
 
 直接使用docker-compose即可使用docker运行
+```
+docker-compose up --build -d
+```
