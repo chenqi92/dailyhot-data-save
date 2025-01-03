@@ -80,6 +80,9 @@ except psycopg2.Error as e:
     exit(1)
 
 def sanitize_table_name(name):
+    """
+    仅允许字母、数字和下划线，其他字符替换为下划线
+    """
     return re.sub(r'\W+', '_', name)
 
 def fetch_all_routes():
@@ -135,13 +138,14 @@ def ensure_table_exists(table_name):
                 ingestion_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 update_time TIMESTAMPTZ NOT NULL,
                 title TEXT,
-                content TEXT,
+                desc TEXT,
                 cover TEXT,
                 item_timestamp BIGINT,
-                hot INTEGER,
+                hot TEXT,
                 url TEXT,
                 mobile_url TEXT,
-                sort_order INT
+                sort_order TEXT,
+                UNIQUE (title, item_timestamp)
             );
         """).format(sql.Identifier(table_name))
         cursor.execute(create_table_query)
@@ -157,20 +161,23 @@ def ensure_table_exists(table_name):
 
 def insert_into_timescaledb(table_name, update_time, data_item, sort_order):
     """
-    将数据插入到 TimescaleDB
+    将数据插入到 TimescaleDB，避免冗余数据
     """
     try:
         insert_query = sql.SQL("""
-            INSERT INTO {} (update_time, title, content, cover, item_timestamp, hot, url, mobile_url, sort_order)
+            INSERT INTO {} (update_time, title, desc, cover, item_timestamp, hot, url, mobile_url, sort_order)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """).format(sql.Identifier(table_name))
+            ON CONFLICT (title, item_timestamp) DO UPDATE
+            SET hot = CONCAT(EXCLUDED.hot, ',', {table}.hot),
+                sort_order = CONCAT(EXCLUDED.sort_order, ',', {table}.sort_order)
+        """).format(sql.Identifier(table_name), table=sql.Identifier(table_name))
 
         # 提取需要的字段
         title = data_item.get('title')
         desc = data_item.get('desc')
         cover = data_item.get('cover')
         item_timestamp = data_item.get('timestamp')
-        hot = data_item.get('hot')
+        hot = str(data_item.get('hot', ''))  # 转换为字符串
         url = data_item.get('url')
         mobile_url = data_item.get('mobileUrl')
 
@@ -185,9 +192,9 @@ def insert_into_timescaledb(table_name, update_time, data_item, sort_order):
             mobile_url,
             sort_order
         ])
-        logging.info(f"Inserted data into {table_name}: {title}")
+        logging.info(f"Inserted/Updated data into {table_name}: {title}")
     except psycopg2.Error as e:
-        logging.error(f"Error inserting data into {table_name}: {e}")
+        logging.error(f"Error inserting/updating data into {table_name}: {e}")
 
 def cache_in_redis_sorted_set(key, data_list):
     """
@@ -310,8 +317,8 @@ def process_routes_periodic():
 
         # 处理 data 列表并插入到 TimescaleDB
         for index, item in enumerate(data_list):
-            # 调整 item_timestamp，补上 8 小时
-            item["timestamp"] = item.get("timestamp", 0) + (8 * 3600)
+            # 调整 item_timestamp，补上 8 小时（如果需要）
+            item_timestamp = item.get("timestamp", 0) + (8 * 3600)
             insert_into_timescaledb(table_name, update_time, item, index)
 
 def initialize():
