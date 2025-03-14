@@ -19,7 +19,6 @@ services:
       TIMESCALEDB_PORT: 5432
       TIMESCALEDB_USER: "postgres"
       TIMESCALEDB_PASSWORD: "${TIMESCALEDB_PASSWORD}"
-      TIMESCALEDB_DB: "postgres"
     depends_on:
       - redis
       - timescaledb
@@ -40,7 +39,7 @@ services:
     image: timescale/timescaledb:latest-pg15
     environment:
       POSTGRES_PASSWORD: "${TIMESCALEDB_PASSWORD}"
-      POSTGRES_DB: "${TIMESCALEDB_DB}"
+      POSTGRES_DB: "postgres"
     ports:
       - "5432:5432"
     volumes:

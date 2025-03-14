@@ -24,7 +24,6 @@ TIMESCALEDB_HOST = os.getenv('TIMESCALEDB_HOST', 'localhost')
 TIMESCALEDB_PORT = int(os.getenv('TIMESCALEDB_PORT', 5432))
 TIMESCALEDB_USER = os.getenv('TIMESCALEDB_USER', 'postgres')
 TIMESCALEDB_PASSWORD = os.getenv('TIMESCALEDB_PASSWORD', 'password')
-TIMESCALEDB_DB = os.getenv('TIMESCALEDB_DB', 'postgres')
 REDIS2_HOST = os.getenv('REDIS2_HOST', 'localhost')
 REDIS2_PORT = int(os.getenv('REDIS2_PORT', 6379))
 REDIS2_DB = int(os.getenv('REDIS2_DB', 0))
@@ -65,40 +64,102 @@ except redis.exceptions.RedisError as e:
     logging.error(f"Second Redis connection error: {e}")
     exit(1)
 
+# 全局连接变量
+conn = None
+cursor = None
+
+def get_db_name_for_year(year):
+    """
+    根据年份生成数据库名称
+    """
+    return f"daily_hot_{year}"
 
 # 初始化 TimescaleDB 连接
-def init_db_connection():
+def init_db_connection(year=None):
+    """
+    初始化数据库连接，如果指定了年份，则连接到对应年份的数据库
+    """
+    if year is None:
+        year = datetime.now().year
+    
+    db_name = get_db_name_for_year(year)
+    
     try:
-        conn = psycopg2.connect(
-            host=TIMESCALEDB_HOST,
-            port=TIMESCALEDB_PORT,
-            user=TIMESCALEDB_USER,
-            password=TIMESCALEDB_PASSWORD,
-            dbname=TIMESCALEDB_DB
-        )
-        conn.autocommit = True
-        cursor = conn.cursor()
-        logging.info("Connected to TimescaleDB")
-
-        # 检查TimescaleDB扩展是否已安装
-        cursor.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
-        logging.info("TimescaleDB extension enabled")
-
-        return conn, cursor
+        # 先尝试连接到指定年份的数据库
+        try:
+            conn = psycopg2.connect(
+                host=TIMESCALEDB_HOST,
+                port=TIMESCALEDB_PORT,
+                user=TIMESCALEDB_USER,
+                password=TIMESCALEDB_PASSWORD,
+                dbname=db_name
+            )
+            conn.autocommit = True
+            cursor = conn.cursor()
+            logging.info(f"Connected to TimescaleDB database: {db_name}")
+            
+            # 检查TimescaleDB扩展是否已安装
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
+            logging.info("TimescaleDB extension enabled")
+            
+            return conn, cursor, db_name
+        except psycopg2.OperationalError:
+            # 如果数据库不存在，则创建它
+            logging.info(f"Database {db_name} does not exist, creating it...")
+            
+            # 连接到默认的postgres数据库
+            temp_conn = psycopg2.connect(
+                host=TIMESCALEDB_HOST,
+                port=TIMESCALEDB_PORT,
+                user=TIMESCALEDB_USER,
+                password=TIMESCALEDB_PASSWORD,
+                dbname="postgres"
+            )
+            temp_conn.autocommit = True
+            temp_cursor = temp_conn.cursor()
+            
+            # 检查数据库是否已存在
+            temp_cursor.execute(f"SELECT 1 FROM pg_database WHERE datname = '{db_name}'")
+            exists = temp_cursor.fetchone()
+            
+            if not exists:
+                # 创建数据库
+                temp_cursor.execute(sql.SQL("CREATE DATABASE {}").format(
+                    sql.Identifier(db_name)
+                ))
+                logging.info(f"Created database {db_name}")
+            
+            temp_cursor.close()
+            temp_conn.close()
+            
+            # 连接到新创建的数据库
+            conn = psycopg2.connect(
+                host=TIMESCALEDB_HOST,
+                port=TIMESCALEDB_PORT,
+                user=TIMESCALEDB_USER,
+                password=TIMESCALEDB_PASSWORD,
+                dbname=db_name
+            )
+            conn.autocommit = True
+            cursor = conn.cursor()
+            
+            # 检查TimescaleDB扩展是否已安装
+            cursor.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
+            logging.info("TimescaleDB extension enabled")
+            
+            return conn, cursor, db_name
     except psycopg2.Error as e:
         logging.error(f"TimescaleDB connection error: {e}")
         exit(1)
 
-
-conn, cursor = init_db_connection()
-
+# 初始化当前年份的数据库连接
+conn, cursor, current_db = init_db_connection()
 
 def sanitize_table_name(name):
     """
     仅允许字母、数字和下划线，其他字符替换为下划线
     """
     return re.sub(r'\W+', '_', name)
-
 
 def fetch_all_routes():
     """
@@ -118,7 +179,6 @@ def fetch_all_routes():
         logging.error(f"Error fetching /all routes: {e}")
         return None
 
-
 def cache_routes(data):
     """
     将 /all 接口的结果缓存到 Redis
@@ -128,7 +188,6 @@ def cache_routes(data):
         logging.info("Cached /all routes to Redis")
     except redis.exceptions.RedisError as e:
         logging.error(f"Error caching routes in Redis: {e}")
-
 
 def get_cached_routes():
     """
@@ -145,65 +204,12 @@ def get_cached_routes():
         logging.error(f"Error retrieving cached routes from Redis: {e}")
         return None
 
-
-def get_table_name_for_year(base_name, year):
-    """
-    根据基础名称和年份生成表名
-    """
-    return f"daily_hot_{year}_{base_name}"
-
-
-def ensure_database_exists():
-    """
-    确保数据库存在
-    """
-    global conn, cursor
-    try:
-        # 检查数据库是否存在
-        cursor.execute(f"SELECT 1 FROM pg_database WHERE datname = '{TIMESCALEDB_DB}'")
-        exists = cursor.fetchone()
-
-        if not exists:
-            # 创建数据库
-            # 需要连接到默认的postgres数据库
-            conn.close()
-            temp_conn = psycopg2.connect(
-                host=TIMESCALEDB_HOST,
-                port=TIMESCALEDB_PORT,
-                user=TIMESCALEDB_USER,
-                password=TIMESCALEDB_PASSWORD,
-                dbname="postgres"
-            )
-            temp_conn.autocommit = True
-            temp_cursor = temp_conn.cursor()
-
-            temp_cursor.execute(sql.SQL("CREATE DATABASE {}").format(
-                sql.Identifier(TIMESCALEDB_DB)
-            ))
-
-            temp_cursor.close()
-            temp_conn.close()
-
-            # 重新连接到新创建的数据库
-            conn, cursor = init_db_connection()
-
-            logging.info(f"Created database {TIMESCALEDB_DB}")
-        else:
-            logging.info(f"Database {TIMESCALEDB_DB} already exists")
-    except psycopg2.Error as e:
-        logging.error(f"Error ensuring database exists: {e}")
-        raise
-
-
-def ensure_table_exists(base_name, year=None):
+def ensure_table_exists(base_name):
     """
     检查表是否存在，不存在则创建，并转换为 TimescaleDB 的 hypertable
     """
-    if year is None:
-        year = datetime.now().year
-
-    table_name = get_table_name_for_year(base_name, year)
-
+    table_name = f"records_{base_name}"
+    
     try:
         create_table_query = sql.SQL("""
             CREATE TABLE IF NOT EXISTS {} (
@@ -241,25 +247,30 @@ def ensure_table_exists(base_name, year=None):
         logging.error(f"Error ensuring table exists for {table_name}: {e}")
         return None
 
-
-def get_or_create_table_for_timestamp(base_name, timestamp):
+def get_or_create_db_for_timestamp(base_name, timestamp):
     """
-    根据时间戳获取或创建对应年份的表
+    根据时间戳获取或创建对应年份的数据库，并确保表存在
     """
+    global conn, cursor, current_db
+    
     # 将时间戳转换为datetime对象
     dt = datetime.fromtimestamp(timestamp / 1000 if timestamp > 1e10 else timestamp)
     year = dt.year
-
-    # 检查是否需要创建新表（跨年）
+    
+    # 检查是否需要切换数据库（跨年）
     current_year = redis_client.get(CURRENT_YEAR_KEY)
-    if current_year is None or int(current_year) != year:
+    db_name = get_db_name_for_year(year)
+    
+    if current_year is None or int(current_year) != year or current_db != db_name:
         # 更新当前年份缓存
         redis_client.set(CURRENT_YEAR_KEY, year)
         logging.info(f"Year changed or initialized to {year}")
-
+        
+        # 切换到对应年份的数据库
+        conn, cursor, current_db = init_db_connection(year)
+    
     # 确保表存在
-    return ensure_table_exists(base_name, year)
-
+    return ensure_table_exists(base_name)
 
 def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
     """
@@ -269,13 +280,13 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
     try:
         # 获取时间戳
         item_timestamp = data_item.get("timestamp", 0) + (8 * 3600)
-
-        # 根据时间戳获取或创建表
-        table_name = get_or_create_table_for_timestamp(base_name, item_timestamp)
+        
+        # 根据时间戳获取或创建对应年份的数据库和表
+        table_name = get_or_create_db_for_timestamp(base_name, item_timestamp)
         if not table_name:
             logging.error(f"Failed to get or create table for {base_name} with timestamp {item_timestamp}")
             return
-
+        
         insert_query = sql.SQL("""
             INSERT INTO {} (update_time, title, desc, cover, item_timestamp, hot, url, mobile_url, sort_order)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -309,8 +320,8 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
         # 如果是连接错误，尝试重新连接
         if isinstance(e, psycopg2.OperationalError):
             logging.info("Attempting to reconnect to database...")
-            conn, cursor = init_db_connection()
-
+            year = datetime.fromtimestamp(item_timestamp / 1000 if item_timestamp > 1e10 else item_timestamp).year
+            conn, cursor, current_db = init_db_connection(year)
 
 def cache_in_redis_sorted_set(key, data_list):
     """
@@ -350,7 +361,6 @@ def cache_in_redis_sorted_set(key, data_list):
     except redis.exceptions.RedisError as e:
         logging.error(f"Error caching data in Redis: {e}")
 
-
 def process_initial_routes(all_data):
     """
     处理初始的 /all 路由数据，创建表并缓存
@@ -360,13 +370,10 @@ def process_initial_routes(all_data):
         logging.error("No routes found in /all data")
         return
 
-    # 确保数据库存在
-    ensure_database_exists()
-
     # 获取当前年份
     current_year = datetime.now().year
     redis_client.set(CURRENT_YEAR_KEY, current_year)
-
+    
     for route in routes:
         name = route.get("name")
         path = route.get("path")
@@ -375,13 +382,12 @@ def process_initial_routes(all_data):
             continue
 
         sanitized_name = sanitize_table_name(name)
-
-        # 确保当前年份的表存在
-        ensure_table_exists(sanitized_name, current_year)
+        
+        # 确保表存在
+        ensure_table_exists(sanitized_name)
 
     # 缓存 /all 结果
     cache_routes(all_data)
-
 
 def process_routes_periodic():
     """
@@ -439,7 +445,6 @@ def process_routes_periodic():
         for index, item in enumerate(data_list):
             insert_into_timescaledb(sanitized_name, update_time, item, str(index))
 
-
 def initialize():
     """
     初始化函数：调用 /all，处理路由，创建表，缓存结果
@@ -452,7 +457,6 @@ def initialize():
         logging.error("Failed to initialize routes from /all")
         exit(1)
 
-
 def run():
     """
     主运行函数：初始化后进入循环，定期执行任务
@@ -464,7 +468,6 @@ def run():
         sleep_time = random.randint(1800, 3600)
         logging.info(f"Sleeping for {sleep_time} seconds")
         time.sleep(sleep_time)
-
 
 if __name__ == "__main__":
     run()
