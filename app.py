@@ -99,57 +99,76 @@ def init_db_connection(year=None):
             logging.info(f"Connected to TimescaleDB database: {db_name}")
             
             # 检查TimescaleDB扩展是否已安装
-            cursor.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
-            logging.info("TimescaleDB extension enabled")
+            try:
+                cursor.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
+                logging.info("TimescaleDB extension enabled")
+            except psycopg2.Error as e:
+                logging.error(f"Error enabling TimescaleDB extension: {e}")
+                logging.warning("Some features may not be available without TimescaleDB extension")
             
             return conn, cursor, db_name
-        except psycopg2.OperationalError:
+        except psycopg2.OperationalError as e:
             # 如果数据库不存在，则创建它
-            logging.info(f"Database {db_name} does not exist, creating it...")
+            logging.info(f"Database {db_name} does not exist or connection failed: {e}")
+            logging.info(f"Attempting to create database {db_name}...")
             
             # 连接到默认的postgres数据库
-            temp_conn = psycopg2.connect(
-                host=TIMESCALEDB_HOST,
-                port=TIMESCALEDB_PORT,
-                user=TIMESCALEDB_USER,
-                password=TIMESCALEDB_PASSWORD,
-                dbname="postgres"
-            )
-            temp_conn.autocommit = True
-            temp_cursor = temp_conn.cursor()
-            
-            # 检查数据库是否已存在
-            temp_cursor.execute(f"SELECT 1 FROM pg_database WHERE datname = '{db_name}'")
-            exists = temp_cursor.fetchone()
-            
-            if not exists:
-                # 创建数据库
-                temp_cursor.execute(sql.SQL("CREATE DATABASE {}").format(
-                    sql.Identifier(db_name)
-                ))
-                logging.info(f"Created database {db_name}")
-            
-            temp_cursor.close()
-            temp_conn.close()
+            try:
+                temp_conn = psycopg2.connect(
+                    host=TIMESCALEDB_HOST,
+                    port=TIMESCALEDB_PORT,
+                    user=TIMESCALEDB_USER,
+                    password=TIMESCALEDB_PASSWORD,
+                    dbname="postgres"
+                )
+                temp_conn.autocommit = True
+                temp_cursor = temp_conn.cursor()
+                
+                # 检查数据库是否已存在
+                temp_cursor.execute(f"SELECT 1 FROM pg_database WHERE datname = '{db_name}'")
+                exists = temp_cursor.fetchone()
+                
+                if not exists:
+                    # 创建数据库
+                    temp_cursor.execute(sql.SQL("CREATE DATABASE {}").format(
+                        sql.Identifier(db_name)
+                    ))
+                    logging.info(f"Created database {db_name}")
+                else:
+                    logging.info(f"Database {db_name} already exists but connection failed")
+                
+                temp_cursor.close()
+                temp_conn.close()
+            except psycopg2.Error as e:
+                logging.error(f"Error connecting to postgres database or creating {db_name}: {e}")
+                raise
             
             # 连接到新创建的数据库
-            conn = psycopg2.connect(
-                host=TIMESCALEDB_HOST,
-                port=TIMESCALEDB_PORT,
-                user=TIMESCALEDB_USER,
-                password=TIMESCALEDB_PASSWORD,
-                dbname=db_name
-            )
-            conn.autocommit = True
-            cursor = conn.cursor()
-            
-            # 检查TimescaleDB扩展是否已安装
-            cursor.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
-            logging.info("TimescaleDB extension enabled")
-            
-            return conn, cursor, db_name
-    except psycopg2.Error as e:
-        logging.error(f"TimescaleDB connection error: {e}")
+            try:
+                conn = psycopg2.connect(
+                    host=TIMESCALEDB_HOST,
+                    port=TIMESCALEDB_PORT,
+                    user=TIMESCALEDB_USER,
+                    password=TIMESCALEDB_PASSWORD,
+                    dbname=db_name
+                )
+                conn.autocommit = True
+                cursor = conn.cursor()
+                
+                # 检查TimescaleDB扩展是否已安装
+                try:
+                    cursor.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
+                    logging.info("TimescaleDB extension enabled")
+                except psycopg2.Error as e:
+                    logging.error(f"Error enabling TimescaleDB extension: {e}")
+                    logging.warning("Some features may not be available without TimescaleDB extension")
+                
+                return conn, cursor, db_name
+            except psycopg2.Error as e:
+                logging.error(f"Error connecting to newly created database {db_name}: {e}")
+                raise
+    except Exception as e:
+        logging.error(f"Unexpected error during database initialization: {e}")
         exit(1)
 
 # 初始化当前年份的数据库连接
@@ -216,7 +235,7 @@ def ensure_table_exists(base_name):
                 ingestion_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 update_time TIMESTAMPTZ NOT NULL,
                 title TEXT,
-                desc TEXT,
+                "desc" TEXT,
                 cover TEXT,
                 item_timestamp BIGINT,
                 hot TEXT,
@@ -226,15 +245,27 @@ def ensure_table_exists(base_name):
                 UNIQUE (title, item_timestamp)
             );
         """).format(sql.Identifier(table_name))
-        cursor.execute(create_table_query)
+        
+        try:
+            cursor.execute(create_table_query)
+            logging.info(f"Table {table_name} created or already exists")
+        except psycopg2.Error as e:
+            logging.error(f"Error creating table {table_name}: {e}")
+            return None
 
         # 创建hypertable并按时间自动分片
-        create_hypertable_query = sql.SQL("""
-            SELECT create_hypertable(%s, 'ingestion_time', 
-                                    chunk_time_interval => INTERVAL '1 day', 
-                                    if_not_exists => TRUE);
-        """)
-        cursor.execute(create_hypertable_query, [table_name])
+        try:
+            create_hypertable_query = sql.SQL("""
+                SELECT create_hypertable(%s, 'ingestion_time', 
+                                        chunk_time_interval => INTERVAL '1 day', 
+                                        if_not_exists => TRUE);
+            """)
+            cursor.execute(create_hypertable_query, [table_name])
+            logging.info(f"Table {table_name} converted to hypertable")
+        except psycopg2.Error as e:
+            logging.error(f"Error converting {table_name} to hypertable: {e}")
+            # 即使转换为hypertable失败，表仍然可以使用
+            logging.warning(f"Will use {table_name} as a regular table")
 
         # 添加保留策略（可选，根据需要保留数据的时间长度调整）
         # cursor.execute(sql.SQL("""
@@ -243,8 +274,8 @@ def ensure_table_exists(base_name):
 
         logging.info(f"Ensured table {table_name} exists and is hypertable with time-based chunks")
         return table_name
-    except psycopg2.Error as e:
-        logging.error(f"Error ensuring table exists for {table_name}: {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error ensuring table exists for {table_name}: {e}")
         return None
 
 def get_or_create_db_for_timestamp(base_name, timestamp):
@@ -288,7 +319,7 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
             return
         
         insert_query = sql.SQL("""
-            INSERT INTO {} (update_time, title, desc, cover, item_timestamp, hot, url, mobile_url, sort_order)
+            INSERT INTO {} (update_time, title, "desc", cover, item_timestamp, hot, url, mobile_url, sort_order)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (title, item_timestamp) DO UPDATE
             SET hot = CONCAT(EXCLUDED.hot, ',', {table}.hot),
