@@ -278,15 +278,20 @@ def ensure_table_exists(base_name):
         logging.error(f"Unexpected error ensuring table exists for {table_name}: {e}")
         return None
 
-def get_or_create_db_for_timestamp(base_name, timestamp):
+def get_or_create_db_for_timestamp(base_name, timestamp, update_time=None):
     """
-    根据时间戳获取或创建对应年份的数据库，并确保表存在
+    根据时间戳或updateTime获取或创建对应年份的数据库，并确保表存在
+    update_time: 更新时间的datetime对象，优先使用此时间的年份
     """
     global conn, cursor, current_db
     
-    # 将时间戳转换为datetime对象
-    dt = datetime.fromtimestamp(timestamp / 1000 if timestamp > 1e10 else timestamp)
-    year = dt.year
+    # 优先使用update_time的年份，如果没有则使用时间戳的年份
+    if update_time:
+        year = update_time.year
+    else:
+        # 将时间戳转换为datetime对象
+        dt = datetime.fromtimestamp(timestamp / 1000 if timestamp > 1e10 else timestamp)
+        year = dt.year
     
     # 检查是否需要切换数据库（跨年）
     current_year = redis_client.get(CURRENT_YEAR_KEY)
@@ -312,8 +317,16 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
         # 获取时间戳
         item_timestamp = data_item.get("timestamp", 0) + (8 * 3600)
         
-        # 根据时间戳获取或创建对应年份的数据库和表
-        table_name = get_or_create_db_for_timestamp(base_name, item_timestamp)
+        # 将时间戳转换为datetime对象
+        item_datetime = datetime.fromtimestamp(item_timestamp / 1000 if item_timestamp > 1e10 else item_timestamp)
+        
+        # 检查数据年份是否超过updateTime年份10年，如果超过则忽略
+        if item_datetime.year < (update_time.year - 10):
+            logging.warning(f"Ignoring data item with title '{data_item.get('title')}' as its year {item_datetime.year} is more than 10 years before update time year {update_time.year}")
+            return
+        
+        # 根据updateTime的年份获取或创建对应年份的数据库和表
+        table_name = get_or_create_db_for_timestamp(base_name, item_timestamp, update_time)
         if not table_name:
             logging.error(f"Failed to get or create table for {base_name} with timestamp {item_timestamp}")
             return
@@ -401,7 +414,7 @@ def process_initial_routes(all_data):
         logging.error("No routes found in /all data")
         return
 
-    # 获取当前年份
+    # 获取当前年份用于初始化
     current_year = datetime.now().year
     redis_client.set(CURRENT_YEAR_KEY, current_year)
     
@@ -414,7 +427,7 @@ def process_initial_routes(all_data):
 
         sanitized_name = sanitize_table_name(name)
         
-        # 确保表存在
+        # 确保表存在，使用当前年份
         ensure_table_exists(sanitized_name)
 
     # 缓存 /all 结果
