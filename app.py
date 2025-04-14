@@ -318,8 +318,19 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
         # 获取时间戳
         item_timestamp = data_item.get("timestamp", 0) + (8 * 3600)
         
+        # 添加时间戳有效性检查
+        if item_timestamp <= 0 or item_timestamp > 32503680000:  # 3000年的时间戳上限(秒)
+            logging.warning(f"Invalid timestamp {item_timestamp} for item with title '{data_item.get('title')}', using current time instead")
+            item_timestamp = int(time.time())
+        
         # 将时间戳转换为datetime对象
-        item_datetime = datetime.fromtimestamp(item_timestamp / 1000 if item_timestamp > 1e10 else item_timestamp)
+        try:
+            item_datetime = datetime.fromtimestamp(item_timestamp / 1000 if item_timestamp > 1e10 else item_timestamp)
+        except (ValueError, OverflowError) as e:
+            logging.error(f"Error converting timestamp {item_timestamp} to datetime: {e}")
+            logging.warning(f"Using current time for item with title '{data_item.get('title')}'")
+            item_timestamp = int(time.time())
+            item_datetime = datetime.now()
         
         # 检查数据年份是否超过updateTime年份10年，如果超过则忽略
         if item_datetime.year < (update_time.year - 10):
@@ -335,7 +346,7 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
         insert_query = sql.SQL("""
             INSERT INTO {} (update_time, title, "desc", cover, item_timestamp, hot, url, mobile_url, sort_order)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (title, item_timestamp) DO UPDATE
+            ON CONFLICT (ingestion_time, title, item_timestamp) DO UPDATE
             SET hot = CONCAT(EXCLUDED.hot, ',', {table}.hot),
                 sort_order = CONCAT(EXCLUDED.sort_order, ',', {table}.sort_order)
         """).format(sql.Identifier(table_name), table=sql.Identifier(table_name))
