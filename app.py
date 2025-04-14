@@ -242,7 +242,7 @@ def ensure_table_exists(base_name):
                 url TEXT,
                 mobile_url TEXT,
                 sort_order TEXT,
-                UNIQUE (title, item_timestamp)
+                UNIQUE (ingestion_time, title, item_timestamp)
             );
         """).format(sql.Identifier(table_name))
         
