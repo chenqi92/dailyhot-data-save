@@ -315,8 +315,9 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
     """
     global conn, cursor
     try:
-        # 获取时间戳
-        item_timestamp = data_item.get("timestamp", 0) + (8 * 3600)
+        # 获取时间戳，确保即使值为None也转换为0
+        timestamp_value = data_item.get("timestamp")
+        item_timestamp = (0 if timestamp_value is None else timestamp_value) + (8 * 3600)
         
         # 添加时间戳有效性检查
         if item_timestamp <= 0 or item_timestamp > 32503680000:  # 3000年的时间戳上限(秒)
@@ -392,8 +393,13 @@ def cache_in_redis_sorted_set(key, data_list):
         # 添加新的数据到有序集合
         pipeline = redis_client.pipeline()
         for item in data_list:
+            # 确保timestamp不为None
             timestamp = item.get('timestamp', 0)
-            member = json.dumps(item, ensure_ascii=False)
+            if timestamp is None:
+                timestamp = 0
+            # 确保item的所有值都不为None，将None转换为空字符串
+            item_copy = {k: ('' if v is None else v) for k, v in item.items()}
+            member = json.dumps(item_copy, ensure_ascii=False)
             pipeline.zadd(key, {member: timestamp})
         pipeline.execute()
 
@@ -405,8 +411,13 @@ def cache_in_redis_sorted_set(key, data_list):
             redis_client2.delete(key)
             pipeline2 = redis_client2.pipeline()
             for item in data_list:
+                # 确保timestamp不为None
                 timestamp = item.get('timestamp', 0)
-                member = json.dumps(item, ensure_ascii=False)
+                if timestamp is None:
+                    timestamp = 0
+                # 确保item的所有值都不为None，将None转换为空字符串
+                item_copy = {k: ('' if v is None else v) for k, v in item.items()}
+                member = json.dumps(item_copy, ensure_ascii=False)
                 pipeline2.zadd(key, {member: timestamp})
             pipeline2.execute()
 
