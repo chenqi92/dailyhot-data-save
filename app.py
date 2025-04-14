@@ -230,50 +230,98 @@ def ensure_table_exists(base_name):
     table_name = f"records_{base_name}"
     
     try:
-        create_table_query = sql.SQL("""
-            CREATE TABLE IF NOT EXISTS {} (
-                ingestion_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                update_time TIMESTAMPTZ NOT NULL,
-                title TEXT,
-                "desc" TEXT,
-                cover TEXT,
-                item_timestamp BIGINT,
-                hot TEXT,
-                url TEXT,
-                mobile_url TEXT,
-                sort_order TEXT,
-                UNIQUE (ingestion_time, title, item_timestamp)
-            );
-        """).format(sql.Identifier(table_name))
+        # 先检查表是否存在
+        cursor.execute(
+            "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s)",
+            [table_name]
+        )
+        table_exists = cursor.fetchone()[0]
         
-        try:
+        if not table_exists:
+            # 创建表并添加必要约束
+            create_table_query = sql.SQL("""
+                CREATE TABLE {} (
+                    ingestion_time TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    update_time TIMESTAMPTZ NOT NULL,
+                    title TEXT,
+                    "desc" TEXT,
+                    cover TEXT,
+                    item_timestamp BIGINT,
+                    hot TEXT,
+                    url TEXT,
+                    mobile_url TEXT,
+                    sort_order TEXT
+                );
+                
+                -- 添加唯一约束（确保ingestion_time在前）
+                ALTER TABLE {} ADD CONSTRAINT {}_unique_constraint 
+                UNIQUE (ingestion_time, title, item_timestamp);
+            """).format(
+                sql.Identifier(table_name),
+                sql.Identifier(table_name),
+                sql.Identifier(f"{table_name}")
+            )
+            
             cursor.execute(create_table_query)
-            logging.info(f"Table {table_name} created or already exists")
-        except psycopg2.Error as e:
-            logging.error(f"Error creating table {table_name}: {e}")
-            return None
+            logging.info(f"Table {table_name} created with explicit unique constraint")
+            
+            # 创建hypertable并按时间自动分片
+            try:
+                create_hypertable_query = """
+                    SELECT create_hypertable(%s, 'ingestion_time', 
+                                          chunk_time_interval => INTERVAL '1 day', 
+                                          if_not_exists => TRUE);
+                """
+                cursor.execute(create_hypertable_query, [table_name])
+                logging.info(f"Table {table_name} converted to hypertable")
+            except psycopg2.Error as e:
+                logging.error(f"Error converting {table_name} to hypertable: {e}")
+                # 即使转换为hypertable失败，表仍然可以使用
+                logging.warning(f"Will use {table_name} as a regular table")
+        else:
+            # 表已存在，检查唯一约束是否存在
+            cursor.execute("""
+                SELECT COUNT(*) FROM pg_constraint 
+                WHERE conrelid = %s::regclass AND contype = 'u'
+            """, [table_name])
+            constraint_exists = cursor.fetchone()[0] > 0
+            
+            if not constraint_exists:
+                # 添加缺失的唯一约束
+                add_constraint_query = sql.SQL("""
+                    ALTER TABLE {} ADD CONSTRAINT {}_unique_constraint 
+                    UNIQUE (ingestion_time, title, item_timestamp);
+                """).format(
+                    sql.Identifier(table_name),
+                    sql.Identifier(f"{table_name}")
+                )
+                try:
+                    cursor.execute(add_constraint_query)
+                    logging.info(f"Added missing unique constraint to existing table {table_name}")
+                except psycopg2.Error as e:
+                    logging.error(f"Error adding unique constraint to {table_name}: {e}")
+                    # 如果无法添加约束，可能需要更复杂的修复
+            
+            # 检查表是否已经是hypertable
+            cursor.execute("""
+                SELECT count(*) FROM _timescaledb_catalog.hypertable
+                WHERE table_name = %s
+            """, [table_name])
+            is_hypertable = cursor.fetchone()[0] > 0
+            
+            if not is_hypertable:
+                try:
+                    create_hypertable_query = """
+                        SELECT create_hypertable(%s, 'ingestion_time', 
+                                            chunk_time_interval => INTERVAL '1 day', 
+                                            if_not_exists => TRUE);
+                    """
+                    cursor.execute(create_hypertable_query, [table_name])
+                    logging.info(f"Converted existing table {table_name} to hypertable")
+                except psycopg2.Error as e:
+                    logging.error(f"Error converting existing table {table_name} to hypertable: {e}")
 
-        # 创建hypertable并按时间自动分片
-        try:
-            create_hypertable_query = sql.SQL("""
-                SELECT create_hypertable(%s, 'ingestion_time', 
-                                        chunk_time_interval => INTERVAL '1 day', 
-                                        if_not_exists => TRUE,
-                                        migrate_data => TRUE);
-            """)
-            cursor.execute(create_hypertable_query, [table_name])
-            logging.info(f"Table {table_name} converted to hypertable")
-        except psycopg2.Error as e:
-            logging.error(f"Error converting {table_name} to hypertable: {e}")
-            # 即使转换为hypertable失败，表仍然可以使用
-            logging.warning(f"Will use {table_name} as a regular table")
-
-        # 添加保留策略（可选，根据需要保留数据的时间长度调整）
-        # cursor.execute(sql.SQL("""
-        #     SELECT add_retention_policy(%s, INTERVAL '1 year', if_not_exists => TRUE);
-        # """), [table_name])
-
-        logging.info(f"Ensured table {table_name} exists and is hypertable with time-based chunks")
+        logging.info(f"Ensured table {table_name} exists with proper constraints")
         return table_name
     except Exception as e:
         logging.error(f"Unexpected error ensuring table exists for {table_name}: {e}")
@@ -291,8 +339,12 @@ def get_or_create_db_for_timestamp(base_name, timestamp, update_time=None):
         year = update_time.year
     else:
         # 将时间戳转换为datetime对象
-        dt = datetime.fromtimestamp(timestamp / 1000 if timestamp > 1e10 else timestamp)
-        year = dt.year
+        try:
+            dt = datetime.fromtimestamp(timestamp)
+            year = dt.year
+        except (ValueError, OverflowError):
+            logging.error(f"Invalid timestamp {timestamp}, using current year")
+            year = datetime.now().year
     
     # 检查是否需要切换数据库（跨年）
     current_year = redis_client.get(CURRENT_YEAR_KEY)
@@ -317,20 +369,27 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
     try:
         # 获取时间戳，确保即使值为None也转换为0
         timestamp_value = data_item.get("timestamp")
-        item_timestamp = (0 if timestamp_value is None else timestamp_value) + (8 * 3600)
+        item_timestamp = 0 if timestamp_value is None else timestamp_value
+        
+        # 判断时间戳是毫秒还是秒级
+        # 如果大于 32503680000（1000年的秒数），则认为是毫秒并转换为秒
+        if item_timestamp > 32503680000:
+            item_timestamp = item_timestamp / 1000
         
         # 添加时间戳有效性检查
-        if item_timestamp <= 0 or item_timestamp > 32503680000:  # 3000年的时间戳上限(秒)
+        current_timestamp = int(time.time())
+        # 允许的时间范围：1970年至当前时间后10年
+        if item_timestamp <= 0 or item_timestamp > (current_timestamp + 315360000):  # 当前时间 + 10年的秒数
             logging.warning(f"Invalid timestamp {item_timestamp} for item with title '{data_item.get('title')}', using current time instead")
-            item_timestamp = int(time.time())
+            item_timestamp = current_timestamp
         
         # 将时间戳转换为datetime对象
         try:
-            item_datetime = datetime.fromtimestamp(item_timestamp / 1000 if item_timestamp > 1e10 else item_timestamp)
+            item_datetime = datetime.fromtimestamp(item_timestamp)
         except (ValueError, OverflowError) as e:
             logging.error(f"Error converting timestamp {item_timestamp} to datetime: {e}")
             logging.warning(f"Using current time for item with title '{data_item.get('title')}'")
-            item_timestamp = int(time.time())
+            item_timestamp = current_timestamp
             item_datetime = datetime.now()
         
         # 检查数据年份是否超过updateTime年份10年，如果超过则忽略
@@ -377,7 +436,7 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
         # 如果是连接错误，尝试重新连接
         if isinstance(e, psycopg2.OperationalError):
             logging.info("Attempting to reconnect to database...")
-            year = datetime.fromtimestamp(item_timestamp / 1000 if item_timestamp > 1e10 else item_timestamp).year
+            year = datetime.fromtimestamp(item_timestamp).year
             conn, cursor, current_db = init_db_connection(year)
 
 def cache_in_redis_sorted_set(key, data_list):
@@ -397,6 +456,11 @@ def cache_in_redis_sorted_set(key, data_list):
             timestamp = item.get('timestamp', 0)
             if timestamp is None:
                 timestamp = 0
+                
+            # 转换毫秒级时间戳为秒级
+            if timestamp > 32503680000:  # 判断是否为毫秒级时间戳
+                timestamp = timestamp / 1000
+                
             # 确保item的所有值都不为None，将None转换为空字符串
             item_copy = {k: ('' if v is None else v) for k, v in item.items()}
             member = json.dumps(item_copy, ensure_ascii=False)
@@ -415,6 +479,11 @@ def cache_in_redis_sorted_set(key, data_list):
                 timestamp = item.get('timestamp', 0)
                 if timestamp is None:
                     timestamp = 0
+                    
+                # 转换毫秒级时间戳为秒级
+                if timestamp > 32503680000:  # 判断是否为毫秒级时间戳
+                    timestamp = timestamp / 1000
+                    
                 # 确保item的所有值都不为None，将None转换为空字符串
                 item_copy = {k: ('' if v is None else v) for k, v in item.items()}
                 member = json.dumps(item_copy, ensure_ascii=False)
