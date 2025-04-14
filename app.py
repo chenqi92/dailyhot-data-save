@@ -258,7 +258,8 @@ def ensure_table_exists(base_name):
             create_hypertable_query = sql.SQL("""
                 SELECT create_hypertable(%s, 'ingestion_time', 
                                         chunk_time_interval => INTERVAL '1 day', 
-                                        if_not_exists => TRUE);
+                                        if_not_exists => TRUE,
+                                        migrate_data => TRUE);
             """)
             cursor.execute(create_hypertable_query, [table_name])
             logging.info(f"Table {table_name} converted to hypertable")
