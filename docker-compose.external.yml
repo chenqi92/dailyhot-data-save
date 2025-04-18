@@ -1,0 +1,25 @@
+services:
+  app:
+    image: kkape/dailyhot-data-save:1.0.0
+    # 或者使用本地构建
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      API_URL: "${API_URL}"
+      REDIS_HOST: "${REDIS_HOST}"
+      REDIS_PORT: "${REDIS_PORT}"
+      REDIS_DB: "${REDIS_DB}"
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+      ENABLE_REDIS2: "${ENABLE_REDIS2:-false}"
+      REDIS2_HOST: "${REDIS2_HOST}"
+      REDIS2_PORT: "${REDIS2_PORT}"
+      REDIS2_DB: "${REDIS2_DB}"
+      REDIS2_PASSWORD: "${REDIS2_PASSWORD}"
+      TIMESCALEDB_HOST: "${TIMESCALEDB_HOST}"
+      TIMESCALEDB_PORT: "${TIMESCALEDB_PORT}"
+      TIMESCALEDB_USER: "${TIMESCALEDB_USER}"
+      TIMESCALEDB_PASSWORD: "${TIMESCALEDB_PASSWORD}"
+    restart: unless-stopped 

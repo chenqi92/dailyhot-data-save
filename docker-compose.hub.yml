@@ -5,51 +5,55 @@ services:
       - .env
     environment:
       API_URL: "${API_URL}"
-      REDIS_HOST: "redis"
-      REDIS_PORT: 6379
-      REDIS_DB: 0
+      REDIS_HOST: "${REDIS_HOST:-redis}"
+      REDIS_PORT: "${REDIS_PORT:-6379}"
+      REDIS_DB: "${REDIS_DB:-0}"
       REDIS_PASSWORD: "${REDIS_PASSWORD}"
-      REDIS2_HOST: "redis2"
-      REDIS2_PORT: 6379
-      REDIS2_DB: 0
-      REDIS2_PASSWORD: "${REDIS2_PASSWORD}"
       ENABLE_REDIS2: "${ENABLE_REDIS2:-false}"
-      TIMESCALEDB_HOST: "timescaledb"
-      TIMESCALEDB_PORT: 5432
-      TIMESCALEDB_USER: "postgres"
+      REDIS2_HOST: "${REDIS2_HOST:-redis2}"
+      REDIS2_PORT: "${REDIS2_PORT:-6379}"
+      REDIS2_DB: "${REDIS2_DB:-0}"
+      REDIS2_PASSWORD: "${REDIS2_PASSWORD}"
+      TIMESCALEDB_HOST: "${TIMESCALEDB_HOST:-timescaledb}"
+      TIMESCALEDB_PORT: "${TIMESCALEDB_PORT:-5432}"
+      TIMESCALEDB_USER: "${TIMESCALEDB_USER:-postgres}"
       TIMESCALEDB_PASSWORD: "${TIMESCALEDB_PASSWORD}"
     depends_on:
-      - redis
-      - timescaledb
+      - ${USE_INTERNAL_REDIS:-redis}
+      - ${USE_INTERNAL_TIMESCALEDB:-timescaledb}
     restart: unless-stopped
 
   redis:
+    profiles:
+      - internal-redis
     image: redis:7
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     ports:
-      - "6379:6379"
+      - "${REDIS_EXTERNAL_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     restart: unless-stopped
 
   redis2:
+    profiles:
+      - internal-redis2
     image: redis:7
     command: ["redis-server", "--requirepass", "${REDIS2_PASSWORD}"]
     ports:
-      - "6380:6379"
+      - "${REDIS2_EXTERNAL_PORT:-6380}:6379"
     volumes:
       - redis2-data:/data
     restart: unless-stopped
-    profiles:
-      - redis2
 
   timescaledb:
+    profiles:
+      - internal-timescaledb
     image: timescale/timescaledb:latest-pg15
     environment:
       POSTGRES_PASSWORD: "${TIMESCALEDB_PASSWORD}"
       POSTGRES_DB: "postgres"
     ports:
-      - "5432:5432"
+      - "${TIMESCALEDB_EXTERNAL_PORT:-5432}:5432"
     volumes:
       - timescaledb-data:/var/lib/postgresql/data
     restart: unless-stopped

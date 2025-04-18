@@ -10,6 +10,8 @@
 - 时间自动分片：每个表按天自动分片，优化查询性能
 - 自动检测数据库：启动时自动检测数据库是否存在，不存在则创建
 - 第二个Redis可选：可选择是否启用第二个Redis进行数据备份
+- 支持外部数据库：可以使用已有的Redis和TimescaleDB
+- 混合模式支持：可以同时使用内部和外部数据库服务
 
 ### 环境变量配置
 在使用前，需要配置以下环境变量：
@@ -33,7 +35,7 @@
 
 ### 使用方法
 
-#### 1. 使用Docker Compose运行
+#### 方式一：使用Docker内置数据库（推荐新用户使用）
 
 1. 克隆仓库：
 ```bash
@@ -63,7 +65,7 @@ REDIS2_PASSWORD=your_redis_password
 docker-compose up --build -d
 
 # 如果需要启用第二个Redis
-docker-compose --profile redis2 up --build -d
+docker-compose --profile redis2 up -d
 ```
 
 5. 查看日志：
@@ -71,50 +73,125 @@ docker-compose --profile redis2 up --build -d
 docker-compose logs -f app
 ```
 
-#### 2. 使用Docker Hub镜像
+#### 方式二：使用外部数据库（适用于已有数据库的用户）
 
-1. 拉取镜像：
+1. 克隆仓库：
 ```bash
-docker pull kkape/dailyhot-data-save:1.0.0
+git clone https://github.com/yourusername/dailyhot-data-save.git
+cd dailyhot-data-save
 ```
 
 2. 创建环境变量文件：
 ```bash
-cp .env.sample .env
+cp .env.external.sample .env
 ```
 
-3. 编辑`.env`文件，设置必要的环境变量
+3. 编辑`.env`文件，配置外部数据库连接信息：
+```
+# 主Redis配置
+REDIS_HOST=192.168.0.100
+REDIS_PORT=6379
+REDIS_PASSWORD=your_redis_password
 
-4. 使用Docker Compose启动服务：
+# TimescaleDB配置
+TIMESCALEDB_HOST=192.168.0.102
+TIMESCALEDB_PORT=5432
+TIMESCALEDB_PASSWORD=yourpassword
+
+# 可选：第二个Redis配置
+ENABLE_REDIS2=true
+REDIS2_HOST=192.168.0.101
+REDIS2_PORT=6379
+REDIS2_PASSWORD=your_redis2_password
+```
+
+4. 使用外部数据库配置启动服务：
 ```bash
-# 如果不需要第二个Redis
+docker-compose -f docker-compose.external.yml up -d
+```
+
+#### 方式三：使用Docker Hub镜像（支持混合模式）
+
+1. 创建环境变量文件：
+```bash
+cp .env.hub.sample .env
+```
+
+2. 编辑`.env`文件，根据需要配置服务：
+
+使用全部内部服务：
+```
+# 启用内部服务
+USE_INTERNAL_REDIS=redis
+USE_INTERNAL_TIMESCALEDB=timescaledb
+
+# Redis配置
+REDIS_HOST=redis
+REDIS_PASSWORD=your_redis_password
+
+# TimescaleDB配置
+TIMESCALEDB_HOST=timescaledb
+TIMESCALEDB_PASSWORD=yourpassword
+```
+
+使用全部外部服务：
+```
+# 注释掉内部服务
+#USE_INTERNAL_REDIS=redis
+#USE_INTERNAL_TIMESCALEDB=timescaledb
+
+# Redis配置
+REDIS_HOST=192.168.0.100
+REDIS_PASSWORD=your_redis_password
+
+# TimescaleDB配置
+TIMESCALEDB_HOST=192.168.0.102
+TIMESCALEDB_PASSWORD=yourpassword
+```
+
+混合模式示例（使用内部Redis和外部TimescaleDB）：
+```
+# 只启用内部Redis
+USE_INTERNAL_REDIS=redis
+#USE_INTERNAL_TIMESCALEDB=timescaledb
+
+# Redis配置
+REDIS_HOST=redis
+REDIS_PASSWORD=your_redis_password
+
+# 外部TimescaleDB配置
+TIMESCALEDB_HOST=192.168.0.102
+TIMESCALEDB_PASSWORD=yourpassword
+```
+
+3. 启动服务：
+```bash
+# 启动所有配置的服务
 docker-compose -f docker-compose.hub.yml up -d
 
-# 如果需要启用第二个Redis
-docker-compose -f docker-compose.hub.yml --profile redis2 up -d
+# 如果需要第二个Redis（确保ENABLE_REDIS2=true）
+docker-compose -f docker-compose.hub.yml --profile internal-redis2 up -d
 ```
 
-### 构建并推送Docker镜像到Docker Hub
+### 数据库要求
 
-#### Linux/macOS
-```bash
-# 添加执行权限
-chmod +x build-and-push.sh
+#### TimescaleDB
+- 版本要求：PostgreSQL 12及以上
+- 需要安装TimescaleDB扩展
+- 数据库用户需要具有创建数据库的权限
 
-# 执行脚本
-./build-and-push.sh
-```
-
-#### Windows
-```bash
-# 执行批处理文件
-build-and-push.bat
-```
+#### Redis
+- 版本要求：Redis 6及以上
+- 需要启用密码认证
+- 建议启用持久化
 
 ### 数据持久化
-- Redis数据存储在`redis-data`卷中
-- 第二个Redis数据存储在`redis2-data`卷中（如果启用）
-- TimescaleDB数据存储在`timescaledb-data`卷中
+- 使用Docker内置数据库时：
+  - Redis数据存储在`redis-data`卷中
+  - 第二个Redis数据存储在`redis2-data`卷中（如果启用）
+  - TimescaleDB数据存储在`timescaledb-data`卷中
+- 使用外部数据库时：
+  - 数据持久化由外部数据库管理
 
 ### 版本信息
 当前版本：1.0.0
