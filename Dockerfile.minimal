@@ -30,7 +30,7 @@ ENV TIMESCALEDB_PASSWORD=your_timescaledb_password
 # 添加版本标签
 LABEL version="1.0.0"
 LABEL maintainer="kkape"
-LABEL variant="full"
+LABEL variant="minimal"
 
 # 启动应用
-CMD ["python", "app.py"]
+CMD ["python", "app.py"] 

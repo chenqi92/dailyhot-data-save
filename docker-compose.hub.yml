@@ -1,6 +1,6 @@
 services:
   app:
-    image: kkape/dailyhot-data-save:1.0.0
+    image: ${DOCKER_IMAGE:-kkape/dailyhot-data-save:1.0.0}
     env_file:
       - .env
     environment:
