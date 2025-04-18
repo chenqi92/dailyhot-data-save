@@ -1,4 +1,9 @@
 @echo off
+REM 设置控制台代码页为UTF-8
+chcp 65001 > nul
+REM 设置控制台字体为支持中文的字体
+reg add "HKEY_CURRENT_USER\Console" /v "FaceName" /t REG_SZ /d "NSimSun" /f > nul 2>&1
+
 REM 设置变量
 set DOCKER_USERNAME=kkape
 set IMAGE_NAME=dailyhot-data-save
