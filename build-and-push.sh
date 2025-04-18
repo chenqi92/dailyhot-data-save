@@ -3,7 +3,7 @@
 # 设置变量
 DOCKER_USERNAME="kkape"
 IMAGE_NAME="dailyhot-data-save"
-VERSION="1.0.0"
+VERSION="1.0.2"
 
 # 构建Docker镜像
 echo "构建Docker镜像: $DOCKER_USERNAME/$IMAGE_NAME:$VERSION"

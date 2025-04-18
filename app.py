@@ -24,6 +24,7 @@ TIMESCALEDB_HOST = os.getenv('TIMESCALEDB_HOST', 'localhost')
 TIMESCALEDB_PORT = int(os.getenv('TIMESCALEDB_PORT', 5432))
 TIMESCALEDB_USER = os.getenv('TIMESCALEDB_USER', 'postgres')
 TIMESCALEDB_PASSWORD = os.getenv('TIMESCALEDB_PASSWORD', 'password')
+TIMESCALEDB_DB = os.getenv('TIMESCALEDB_DB', 'daily_hot')  # 自定义数据库名称前缀
 # 是否启用第二个Redis
 ENABLE_REDIS2 = os.getenv('ENABLE_REDIS2', 'false').lower() == 'true'
 REDIS2_HOST = os.getenv('REDIS2_HOST', 'localhost')
@@ -35,6 +36,10 @@ REDIS2_PASSWORD = os.getenv('REDIS2_PASSWORD', '')
 ROUTES_CACHE_KEY = 'allbs:routes_cache'
 # 当前年份缓存键
 CURRENT_YEAR_KEY = 'allbs:current_year'
+
+# 确保API_URL末尾没有斜杠
+if API_URL.endswith('/'):
+    API_URL = API_URL[:-1]
 
 # 初始化 Redis 连接
 try:
@@ -77,7 +82,7 @@ def get_db_name_for_year(year):
     """
     根据年份生成数据库名称
     """
-    return f"daily_hot_{year}"
+    return f"{TIMESCALEDB_DB}_{year}"
 
 # 初始化 TimescaleDB 连接
 def init_db_connection(year=None):
@@ -190,7 +195,14 @@ def fetch_all_routes():
     获取 /all 接口的数据
     """
     try:
-        response = requests.get(API_URL + "/all", timeout=10)
+        # 构建/all接口URL，确保路径正确
+        if "/all" in API_URL:
+            all_url = API_URL
+        else:
+            all_url = f"{API_URL}/all"
+            
+        logging.info(f"Fetching routes from: {all_url}")
+        response = requests.get(all_url, timeout=10)
         response.raise_for_status()
         data = response.json()
         if data.get("code") == 200:
@@ -557,7 +569,10 @@ def process_routes_periodic():
         key = path.lstrip('/')
 
         # 构建具体请求的 URL
-        request_url = f"{API_URL}{path}"
+        if path.startswith('/'):
+            request_url = f"{API_URL}{path}"
+        else:
+            request_url = f"{API_URL}/{path}"
         logging.info(f"Fetching data from {request_url}")
 
         try:

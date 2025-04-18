@@ -7,7 +7,7 @@ reg add "HKEY_CURRENT_USER\Console" /v "FaceName" /t REG_SZ /d "NSimSun" /f > nu
 REM 设置变量
 set DOCKER_USERNAME=kkape
 set IMAGE_NAME=dailyhot-data-save
-set VERSION=1.0.0
+set VERSION=1.0.2
 
 REM 拉取基础镜像
 echo 拉取基础镜像...
