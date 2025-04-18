@@ -24,6 +24,8 @@ TIMESCALEDB_HOST = os.getenv('TIMESCALEDB_HOST', 'localhost')
 TIMESCALEDB_PORT = int(os.getenv('TIMESCALEDB_PORT', 5432))
 TIMESCALEDB_USER = os.getenv('TIMESCALEDB_USER', 'postgres')
 TIMESCALEDB_PASSWORD = os.getenv('TIMESCALEDB_PASSWORD', 'password')
+# 是否启用第二个Redis
+ENABLE_REDIS2 = os.getenv('ENABLE_REDIS2', 'false').lower() == 'true'
 REDIS2_HOST = os.getenv('REDIS2_HOST', 'localhost')
 REDIS2_PORT = int(os.getenv('REDIS2_PORT', 6379))
 REDIS2_DB = int(os.getenv('REDIS2_DB', 0))
@@ -49,20 +51,23 @@ except redis.exceptions.RedisError as e:
     logging.error(f"Redis connection error: {e}")
     exit(1)
 
-# 初始化第二个 Redis 连接
-try:
-    redis_client2 = redis.Redis(
-        host=REDIS2_HOST,
-        port=REDIS2_PORT,
-        db=REDIS2_DB,
-        password=REDIS2_PASSWORD,
-        decode_responses=True
-    )
-    redis_client2.ping()
-    logging.info("Connected to second Redis")
-except redis.exceptions.RedisError as e:
-    logging.error(f"Second Redis connection error: {e}")
-    exit(1)
+# 初始化第二个 Redis 连接（如果启用）
+redis_client2 = None
+if ENABLE_REDIS2:
+    try:
+        redis_client2 = redis.Redis(
+            host=REDIS2_HOST,
+            port=REDIS2_PORT,
+            db=REDIS2_DB,
+            password=REDIS2_PASSWORD,
+            decode_responses=True
+        )
+        redis_client2.ping()
+        logging.info("Connected to second Redis")
+    except redis.exceptions.RedisError as e:
+        logging.error(f"Second Redis connection error: {e}")
+        logging.warning("Continuing without second Redis")
+        redis_client2 = None
 
 # 全局连接变量
 conn = None
@@ -470,30 +475,31 @@ def cache_in_redis_sorted_set(key, data_list):
         redis_client.expire(key, 3600)
         logging.info(f"Cached {len(data_list)} items in Redis sorted set with key: {key}")
 
-        # 下面新增往第二个 Redis 存储的逻辑，与第一个保持一致
-        try:
-            redis_client2.delete(key)
-            pipeline2 = redis_client2.pipeline()
-            for item in data_list:
-                # 确保timestamp不为None
-                timestamp = item.get('timestamp', 0)
-                if timestamp is None:
-                    timestamp = 0
-                    
-                # 转换毫秒级时间戳为秒级
-                if timestamp > 32503680000:  # 判断是否为毫秒级时间戳
-                    timestamp = timestamp / 1000
-                    
-                # 确保item的所有值都不为None，将None转换为空字符串
-                item_copy = {k: ('' if v is None else v) for k, v in item.items()}
-                member = json.dumps(item_copy, ensure_ascii=False)
-                pipeline2.zadd(key, {member: timestamp})
-            pipeline2.execute()
+        # 如果启用了第二个Redis，则也存储到第二个Redis
+        if ENABLE_REDIS2 and redis_client2:
+            try:
+                redis_client2.delete(key)
+                pipeline2 = redis_client2.pipeline()
+                for item in data_list:
+                    # 确保timestamp不为None
+                    timestamp = item.get('timestamp', 0)
+                    if timestamp is None:
+                        timestamp = 0
+                        
+                    # 转换毫秒级时间戳为秒级
+                    if timestamp > 32503680000:  # 判断是否为毫秒级时间戳
+                        timestamp = timestamp / 1000
+                        
+                    # 确保item的所有值都不为None，将None转换为空字符串
+                    item_copy = {k: ('' if v is None else v) for k, v in item.items()}
+                    member = json.dumps(item_copy, ensure_ascii=False)
+                    pipeline2.zadd(key, {member: timestamp})
+                pipeline2.execute()
 
-            redis_client2.expire(key, 3600)
-            logging.info(f"Cached {len(data_list)} items in second Redis sorted set with key: {key}")
-        except redis.exceptions.RedisError as e:
-            logging.error(f"Error caching data in second Redis: {e}")
+                redis_client2.expire(key, 3600)
+                logging.info(f"Cached {len(data_list)} items in second Redis sorted set with key: {key}")
+            except redis.exceptions.RedisError as e:
+                logging.error(f"Error caching data in second Redis: {e}")
     except redis.exceptions.RedisError as e:
         logging.error(f"Error caching data in Redis: {e}")
 

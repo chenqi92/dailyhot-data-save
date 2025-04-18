@@ -26,5 +26,9 @@ ENV TIMESCALEDB_PORT=5432
 ENV TIMESCALEDB_USER=postgres
 ENV TIMESCALEDB_PASSWORD=your_timescaledb_password
 
+# 添加版本标签
+LABEL version="1.0.0"
+LABEL maintainer="kkape"
+
 # 启动应用
 CMD ["python", "app.py"]
