@@ -25,11 +25,11 @@ ENV TIMESCALEDB_PORT=5432
 ENV TIMESCALEDB_USER=postgres
 
 # 添加版本和作者信息
-LABEL version="latest"
+LABEL version="1.0.1"
 LABEL maintainer="kkape <cq92104@gmail.com>"
 LABEL variant="minimal"
 LABEL org.opencontainers.image.authors="kkape"
-LABEL org.opencontainers.image.version="latest"
+LABEL org.opencontainers.image.version="1.0.0"
 LABEL org.opencontainers.image.description="DailyHot Data Save Service - Minimal Version"
 
 # 启动应用
