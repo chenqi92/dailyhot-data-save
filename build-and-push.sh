@@ -9,6 +9,10 @@ VERSION="1.0.2"
 echo "构建Docker镜像: $DOCKER_USERNAME/$IMAGE_NAME:$VERSION"
 docker build -t $DOCKER_USERNAME/$IMAGE_NAME:$VERSION .
 
+# 添加latest标签
+echo "添加latest标签..."
+docker tag $DOCKER_USERNAME/$IMAGE_NAME:$VERSION $DOCKER_USERNAME/$IMAGE_NAME:latest
+
 # 登录到Docker Hub
 echo "登录到Docker Hub..."
 docker login
@@ -16,5 +20,8 @@ docker login
 # 推送镜像到Docker Hub
 echo "推送镜像到Docker Hub: $DOCKER_USERNAME/$IMAGE_NAME:$VERSION"
 docker push $DOCKER_USERNAME/$IMAGE_NAME:$VERSION
+
+echo "推送镜像到Docker Hub: $DOCKER_USERNAME/$IMAGE_NAME:latest"
+docker push $DOCKER_USERNAME/$IMAGE_NAME:latest
 
 echo "完成！镜像已成功上传到Docker Hub。" 
