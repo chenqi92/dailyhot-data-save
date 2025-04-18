@@ -9,17 +9,30 @@ set DOCKER_USERNAME=kkape
 set IMAGE_NAME=dailyhot-data-save
 set VERSION=1.0.0
 
+REM 拉取基础镜像
+echo 拉取基础镜像...
+docker pull python:3.12-slim || goto :error
+docker pull redis:7 || goto :error
+docker pull timescale/timescaledb:latest-pg15 || goto :error
+
 REM 构建Docker镜像
 echo 构建Docker镜像: %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION%
-docker build -t %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION% .
+docker build -t %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION% . || goto :error
 
 REM 登录到Docker Hub
 echo 登录到Docker Hub...
-docker login
+docker login || goto :error
 
 REM 推送镜像到Docker Hub
 echo 推送镜像到Docker Hub: %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION%
-docker push %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION%
+docker push %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION% || goto :error
 
 echo 完成！镜像已成功上传到Docker Hub。
+goto :end
+
+:error
+echo 发生错误！请检查网络连接或Docker配置。
+exit /b 1
+
+:end
 pause 
