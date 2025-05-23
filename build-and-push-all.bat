@@ -11,27 +11,32 @@ set /p VERSION=<VERSION
 
 echo 开始构建和推送镜像...
 
-REM 构建并推送完整版镜像
+REM 构建完整版镜像
 echo 构建完整版镜像: %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION%
-docker build -t %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION% -t %DOCKER_USERNAME%/%IMAGE_NAME%:full-%VERSION% -f Dockerfile . || goto :error
+docker build -t %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION% -t %DOCKER_USERNAME%/%IMAGE_NAME%:full-%VERSION% -t %DOCKER_USERNAME%/%IMAGE_NAME%:latest -f Dockerfile . || goto :error
 
-REM 构建并推送精简版镜像
+REM 构建精简版镜像
 echo 构建精简版镜像: %DOCKER_USERNAME%/%IMAGE_NAME%:minimal-%VERSION%
-docker build -t %DOCKER_USERNAME%/%IMAGE_NAME%:minimal-%VERSION% -f Dockerfile.minimal . || goto :error
+docker build -t %DOCKER_USERNAME%/%IMAGE_NAME%:minimal-%VERSION% -t %DOCKER_USERNAME%/%IMAGE_NAME%:minimal-latest -f Dockerfile.minimal . || goto :error
 
 REM 登录到Docker Hub
 echo 登录到Docker Hub...
 docker login || goto :error
 
-REM 推送镜像到Docker Hub
+REM 推送完整版镜像
 echo 推送完整版镜像...
 docker push %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION% || goto :error
 docker push %DOCKER_USERNAME%/%IMAGE_NAME%:full-%VERSION% || goto :error
+docker push %DOCKER_USERNAME%/%IMAGE_NAME%:latest || goto :error
 
+REM 推送精简版镜像
 echo 推送精简版镜像...
 docker push %DOCKER_USERNAME%/%IMAGE_NAME%:minimal-%VERSION% || goto :error
+docker push %DOCKER_USERNAME%/%IMAGE_NAME%:minimal-latest || goto :error
 
 echo 完成！所有镜像已成功上传到Docker Hub。
+echo 完整版镜像标签: %VERSION%, full-%VERSION%, latest
+echo 精简版镜像标签: minimal-%VERSION%, minimal-latest
 goto :end
 
 :error
