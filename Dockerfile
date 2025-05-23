@@ -26,11 +26,11 @@ ENV TIMESCALEDB_USER=postgres
 ENV TIMESCALEDB_DB=daily_hot
 
 # 添加版本和作者信息
-LABEL version="1.0.3"
+LABEL version="1.0.4"
 LABEL maintainer="kkape <cq92104@gmail.com>"
 LABEL variant="full"
 LABEL org.opencontainers.image.authors="kkape"
-LABEL org.opencontainers.image.version="1.0.3"
+LABEL org.opencontainers.image.version="1.0.4"
 LABEL org.opencontainers.image.description="DailyHot Data Save Service - Full Version"
 
 # 启动应用

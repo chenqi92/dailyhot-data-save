@@ -243,8 +243,10 @@ def get_cached_routes():
 def ensure_table_exists(base_name):
     """
     检查表是否存在，不存在则创建，并转换为 TimescaleDB 的 hypertable
+    修复现有表的约束问题
     """
     table_name = f"records_{base_name}"
+    constraint_name = f"{table_name}_unique_constraint"
     
     try:
         # 先检查表是否存在
@@ -276,7 +278,7 @@ def ensure_table_exists(base_name):
             """).format(
                 sql.Identifier(table_name),
                 sql.Identifier(table_name),
-                sql.Identifier(f"{table_name}_unique_constraint")
+                sql.Identifier(constraint_name)
             )
             
             cursor.execute(create_table_query)
@@ -296,28 +298,76 @@ def ensure_table_exists(base_name):
                 # 即使转换为hypertable失败，表仍然可以使用
                 logging.warning(f"Will use {table_name} as a regular table")
         else:
-            # 表已存在，检查唯一约束是否存在
-            cursor.execute("""
-                SELECT COUNT(*) FROM pg_constraint 
-                WHERE conrelid = %s::regclass AND contype = 'u'
-            """, [table_name])
-            constraint_exists = cursor.fetchone()[0] > 0
+            # 表已存在，需要检查和修复约束
+            logging.info(f"Table {table_name} already exists, checking constraints...")
             
-            if not constraint_exists:
-                # 添加缺失的唯一约束
+            # 检查是否存在正确的唯一约束（包含ingestion_time）
+            cursor.execute("""
+                SELECT conname FROM pg_constraint 
+                WHERE conrelid = %s::regclass 
+                AND contype = 'u' 
+                AND array_to_string(conkey, ',') = (
+                    SELECT array_to_string(array_agg(attnum ORDER BY attnum), ',')
+                    FROM pg_attribute 
+                    WHERE attrelid = %s::regclass 
+                    AND attname IN ('ingestion_time', 'title', 'item_timestamp')
+                    AND NOT attisdropped
+                )
+            """, [table_name, table_name])
+            correct_constraint = cursor.fetchone()
+            
+            if not correct_constraint:
+                # 删除所有现有的唯一约束
+                cursor.execute("""
+                    SELECT conname FROM pg_constraint 
+                    WHERE conrelid = %s::regclass AND contype = 'u'
+                """, [table_name])
+                existing_constraints = cursor.fetchall()
+                
+                for (constraint,) in existing_constraints:
+                    try:
+                        drop_constraint_query = sql.SQL("ALTER TABLE {} DROP CONSTRAINT {}").format(
+                            sql.Identifier(table_name),
+                            sql.Identifier(constraint)
+                        )
+                        cursor.execute(drop_constraint_query)
+                        logging.info(f"Dropped existing constraint {constraint} from {table_name}")
+                    except psycopg2.Error as e:
+                        logging.error(f"Error dropping constraint {constraint}: {e}")
+                
+                # 添加正确的唯一约束
                 add_constraint_query = sql.SQL("""
                     ALTER TABLE {} ADD CONSTRAINT {} 
                     UNIQUE (ingestion_time, title, item_timestamp);
                 """).format(
                     sql.Identifier(table_name),
-                    sql.Identifier(f"{table_name}_unique_constraint")
+                    sql.Identifier(constraint_name)
                 )
                 try:
                     cursor.execute(add_constraint_query)
-                    logging.info(f"Added missing unique constraint to existing table {table_name}")
+                    logging.info(f"Added correct unique constraint to existing table {table_name}")
                 except psycopg2.Error as e:
                     logging.error(f"Error adding unique constraint to {table_name}: {e}")
-                    # 如果无法添加约束，可能需要更复杂的修复
+                    # 如果还是失败，可能是数据重复，尝试清理重复数据
+                    try:
+                        # 删除重复数据，只保留最早的记录
+                        dedupe_query = sql.SQL("""
+                            DELETE FROM {} WHERE ctid NOT IN (
+                                SELECT min(ctid) FROM {} 
+                                GROUP BY ingestion_time, title, item_timestamp
+                            );
+                        """).format(sql.Identifier(table_name), sql.Identifier(table_name))
+                        cursor.execute(dedupe_query)
+                        deleted_count = cursor.rowcount
+                        logging.info(f"Removed {deleted_count} duplicate rows from {table_name}")
+                        
+                        # 重新尝试添加约束
+                        cursor.execute(add_constraint_query)
+                        logging.info(f"Successfully added unique constraint after deduplication")
+                    except psycopg2.Error as e2:
+                        logging.error(f"Failed to add constraint even after deduplication: {e2}")
+                        # 作为最后手段，不使用约束
+                        logging.warning(f"Will use {table_name} without unique constraint")
             
             # 检查表是否已经是hypertable
             cursor.execute("""
@@ -337,6 +387,7 @@ def ensure_table_exists(base_name):
                     logging.info(f"Converted existing table {table_name} to hypertable")
                 except psycopg2.Error as e:
                     logging.error(f"Error converting existing table {table_name} to hypertable: {e}")
+                    logging.warning(f"Will use {table_name} as a regular table")
 
         logging.info(f"Ensured table {table_name} exists with proper constraints")
         return table_name
@@ -393,21 +444,26 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
         if item_timestamp > 32503680000:
             item_timestamp = item_timestamp / 1000
         
-        # 添加时间戳有效性检查
+        # 处理无效时间戳
         current_timestamp = int(time.time())
         # 允许的时间范围：1970年至当前时间后10年
         if item_timestamp <= 0 or item_timestamp > (current_timestamp + 315360000):  # 当前时间 + 10年的秒数
-            logging.warning(f"Invalid timestamp {item_timestamp} for item with title '{data_item.get('title')}', using current time instead")
-            item_timestamp = current_timestamp
+            # 对于无效时间戳，使用update_time的时间戳而不是当前时间
+            if update_time:
+                item_timestamp = int(update_time.timestamp())
+                logging.debug(f"Using update_time as timestamp for item with title '{data_item.get('title')}'")
+            else:
+                item_timestamp = current_timestamp
+                logging.warning(f"Invalid timestamp {timestamp_value} for item with title '{data_item.get('title')}', using current time instead")
         
         # 将时间戳转换为datetime对象
         try:
             item_datetime = datetime.fromtimestamp(item_timestamp)
         except (ValueError, OverflowError) as e:
             logging.error(f"Error converting timestamp {item_timestamp} to datetime: {e}")
-            logging.warning(f"Using current time for item with title '{data_item.get('title')}'")
-            item_timestamp = current_timestamp
-            item_datetime = datetime.now()
+            logging.warning(f"Using update_time for item with title '{data_item.get('title')}'")
+            item_timestamp = int(update_time.timestamp()) if update_time else current_timestamp
+            item_datetime = update_time if update_time else datetime.now()
         
         # 检查数据年份是否超过updateTime年份10年，如果超过则忽略
         if item_datetime.year < (update_time.year - 10):
@@ -420,14 +476,14 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
             logging.error(f"Failed to get or create table for {base_name} with timestamp {item_timestamp}")
             return
         
-        insert_query = sql.SQL("""
-            INSERT INTO {} (update_time, title, "desc", cover, item_timestamp, hot, url, mobile_url, sort_order)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (ingestion_time, title, item_timestamp) DO UPDATE
-            SET hot = CONCAT(EXCLUDED.hot, ',', {table}.hot),
-                sort_order = CONCAT(EXCLUDED.sort_order, ',', {table}.sort_order)
-        """).format(sql.Identifier(table_name), table=sql.Identifier(table_name))
-
+        # 检查表是否有唯一约束
+        cursor.execute("""
+            SELECT conname FROM pg_constraint 
+            WHERE conrelid = %s::regclass AND contype = 'u'
+            LIMIT 1
+        """, [table_name])
+        has_constraint = cursor.fetchone() is not None
+        
         # 提取需要的字段
         title = data_item.get('title')
         desc = data_item.get('desc')
@@ -435,6 +491,49 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
         hot = str(data_item.get('hot', ''))  # 转换为字符串
         url = data_item.get('url')
         mobile_url = data_item.get('mobileUrl')
+        
+        if has_constraint:
+            # 如果有约束，使用ON CONFLICT处理
+            insert_query = sql.SQL("""
+                INSERT INTO {} (update_time, title, "desc", cover, item_timestamp, hot, url, mobile_url, sort_order)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (ingestion_time, title, item_timestamp) DO UPDATE
+                SET hot = CONCAT(EXCLUDED.hot, ',', {table}.hot),
+                    sort_order = CONCAT(EXCLUDED.sort_order, ',', {table}.sort_order)
+            """).format(sql.Identifier(table_name), table=sql.Identifier(table_name))
+        else:
+            # 如果没有约束，先检查是否存在相同记录
+            check_query = sql.SQL("""
+                SELECT COUNT(*) FROM {} 
+                WHERE title = %s AND item_timestamp = %s
+                AND ingestion_time::date = CURRENT_DATE
+            """).format(sql.Identifier(table_name))
+            
+            cursor.execute(check_query, [title, item_timestamp])
+            exists = cursor.fetchone()[0] > 0
+            
+            if exists:
+                # 记录已存在，更新hot和sort_order
+                update_query = sql.SQL("""
+                    UPDATE {} SET 
+                        hot = CONCAT(hot, ',', %s),
+                        sort_order = CONCAT(sort_order, ',', %s),
+                        update_time = %s
+                    WHERE title = %s AND item_timestamp = %s
+                    AND ingestion_time::date = CURRENT_DATE
+                """).format(sql.Identifier(table_name))
+                
+                cursor.execute(update_query, [
+                    hot, sort_order, update_time, title, item_timestamp
+                ])
+                logging.info(f"Updated existing record in {table_name}: {title}")
+                return
+            else:
+                # 记录不存在，直接插入
+                insert_query = sql.SQL("""
+                    INSERT INTO {} (update_time, title, "desc", cover, item_timestamp, hot, url, mobile_url, sort_order)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """).format(sql.Identifier(table_name))
 
         cursor.execute(insert_query, [
             update_time,
