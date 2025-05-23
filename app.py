@@ -271,12 +271,12 @@ def ensure_table_exists(base_name):
                 );
                 
                 -- 添加唯一约束（确保ingestion_time在前）
-                ALTER TABLE {} ADD CONSTRAINT {}_unique_constraint 
+                ALTER TABLE {} ADD CONSTRAINT {} 
                 UNIQUE (ingestion_time, title, item_timestamp);
             """).format(
                 sql.Identifier(table_name),
                 sql.Identifier(table_name),
-                sql.Identifier(f"{table_name}")
+                sql.Identifier(f"{table_name}_unique_constraint")
             )
             
             cursor.execute(create_table_query)
@@ -306,11 +306,11 @@ def ensure_table_exists(base_name):
             if not constraint_exists:
                 # 添加缺失的唯一约束
                 add_constraint_query = sql.SQL("""
-                    ALTER TABLE {} ADD CONSTRAINT {}_unique_constraint 
+                    ALTER TABLE {} ADD CONSTRAINT {} 
                     UNIQUE (ingestion_time, title, item_timestamp);
                 """).format(
                     sql.Identifier(table_name),
-                    sql.Identifier(f"{table_name}")
+                    sql.Identifier(f"{table_name}_unique_constraint")
                 )
                 try:
                     cursor.execute(add_constraint_query)
