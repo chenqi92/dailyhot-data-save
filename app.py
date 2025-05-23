@@ -78,6 +78,9 @@ if ENABLE_REDIS2:
 conn = None
 cursor = None
 
+# 表检查缓存，避免重复检查表结构
+table_checked_cache = set()
+
 def get_db_name_for_year(year):
     """
     根据年份生成数据库名称
@@ -243,10 +246,19 @@ def get_cached_routes():
 def ensure_table_exists(base_name):
     """
     检查表是否存在，不存在则创建，并转换为 TimescaleDB 的 hypertable
-    修复现有表的约束问题
+    修复现有表的约束问题，使用缓存避免重复检查
     """
+    global table_checked_cache
+    
     table_name = f"records_{base_name}"
     constraint_name = f"{table_name}_unique_constraint"
+    
+    # 使用数据库名和表名作为缓存键
+    cache_key = f"{current_db}:{table_name}"
+    
+    # 如果已经检查过该表，直接返回
+    if cache_key in table_checked_cache:
+        return table_name
     
     try:
         # 先检查表是否存在
@@ -284,7 +296,7 @@ def ensure_table_exists(base_name):
             cursor.execute(create_table_query)
             logging.info(f"Table {table_name} created with explicit unique constraint")
             
-            # 创建hypertable并按时间自动分片
+            # 创建hypertable并按时间自动分片（新表可以直接转换）
             try:
                 create_hypertable_query = """
                     SELECT create_hypertable(%s, 'ingestion_time', 
@@ -378,17 +390,21 @@ def ensure_table_exists(base_name):
             
             if not is_hypertable:
                 try:
+                    # 为现有表转换为hypertable，需要添加migrate_data参数
                     create_hypertable_query = """
                         SELECT create_hypertable(%s, 'ingestion_time', 
-                                            chunk_time_interval => INTERVAL '1 day', 
+                                            chunk_time_interval => INTERVAL '1 day',
+                                            migrate_data => true,
                                             if_not_exists => TRUE);
                     """
                     cursor.execute(create_hypertable_query, [table_name])
-                    logging.info(f"Converted existing table {table_name} to hypertable")
+                    logging.info(f"Converted existing table {table_name} to hypertable with data migration")
                 except psycopg2.Error as e:
                     logging.error(f"Error converting existing table {table_name} to hypertable: {e}")
                     logging.warning(f"Will use {table_name} as a regular table")
 
+        # 添加到缓存，避免重复检查
+        table_checked_cache.add(cache_key)
         logging.info(f"Ensured table {table_name} exists with proper constraints")
         return table_name
     except Exception as e:
@@ -400,7 +416,7 @@ def get_or_create_db_for_timestamp(base_name, timestamp, update_time=None):
     根据时间戳或updateTime获取或创建对应年份的数据库，并确保表存在
     update_time: 更新时间的datetime对象，优先使用此时间的年份
     """
-    global conn, cursor, current_db
+    global conn, cursor, current_db, table_checked_cache
     
     # 优先使用update_time的年份，如果没有则使用时间戳的年份
     if update_time:
@@ -425,6 +441,10 @@ def get_or_create_db_for_timestamp(base_name, timestamp, update_time=None):
         
         # 切换到对应年份的数据库
         conn, cursor, current_db = init_db_connection(year)
+        
+        # 清理表检查缓存，因为切换了数据库
+        table_checked_cache.clear()
+        logging.info(f"Cleared table cache due to database switch to {current_db}")
     
     # 确保表存在
     return ensure_table_exists(base_name)
