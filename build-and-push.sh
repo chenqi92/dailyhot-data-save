@@ -3,7 +3,7 @@
 # 设置变量
 DOCKER_USERNAME="kkape"
 IMAGE_NAME="dailyhot-data-save"
-VERSION="1.0.2"
+VERSION=$(cat VERSION)
 PLATFORMS="linux/amd64,linux/arm64"
 
 echo "开始构建和推送镜像..."
