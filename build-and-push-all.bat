@@ -7,9 +7,26 @@ reg add "HKEY_CURRENT_USER\Console" /v "FaceName" /t REG_SZ /d "NSimSun" /f > nu
 REM 设置变量
 set DOCKER_USERNAME=kkape
 set IMAGE_NAME=dailyhot-data-save
+set PLATFORMS=linux/amd64,linux/arm64
+
+REM 检查VERSION文件是否存在
+if not exist "VERSION" (
+    echo 错误：VERSION文件不存在！
+    exit /b 1
+)
+
 set /p VERSION=<VERSION
 
+REM 验证版本号不为空
+if "%VERSION%"=="" (
+    echo 错误：VERSION文件为空！
+    exit /b 1
+)
+
 echo 开始构建和推送镜像...
+echo 用户名: %DOCKER_USERNAME%
+echo 镜像名: %IMAGE_NAME%
+echo 版本号: %VERSION%
 
 REM 构建完整版镜像
 echo 构建完整版镜像: %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION%
@@ -18,6 +35,13 @@ docker build -t %DOCKER_USERNAME%/%IMAGE_NAME%:%VERSION% -t %DOCKER_USERNAME%/%I
 REM 构建精简版镜像
 echo 构建精简版镜像: %DOCKER_USERNAME%/%IMAGE_NAME%:minimal-%VERSION%
 docker build -t %DOCKER_USERNAME%/%IMAGE_NAME%:minimal-%VERSION% -t %DOCKER_USERNAME%/%IMAGE_NAME%:minimal-latest -f Dockerfile.minimal . || goto :error
+
+REM 检查Docker是否运行
+echo 检查Docker状态...
+docker info >nul 2>&1 || (
+    echo 错误：Docker未运行或无法访问！请启动Docker后重试。
+    goto :error
+)
 
 REM 登录到Docker Hub
 echo 登录到Docker Hub...

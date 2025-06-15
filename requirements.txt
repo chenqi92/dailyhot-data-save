@@ -2,4 +2,4 @@ requests
 redis
 psycopg2-binary
 python-dateutil
-python-crontab
+croniter

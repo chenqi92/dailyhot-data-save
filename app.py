@@ -9,7 +9,7 @@ from psycopg2 import sql
 from datetime import datetime, timedelta
 import logging
 import re
-from crontab import CronTab
+from croniter import croniter
 import threading
 
 # 设置日志
@@ -774,12 +774,23 @@ def should_run_now(cron_expression):
     检查当前时间是否符合cron表达式
     """
     try:
-        from crontab import CronTab
-        cron = CronTab(cron_expression)
+        from croniter import croniter
+        from datetime import datetime
+
+        # 获取当前时间
+        now = datetime.now()
+
+        # 创建croniter对象
+        cron = croniter(cron_expression, now)
+
         # 获取下一次执行时间
-        next_run = cron.next(default_utc=False)
-        # 如果下一次执行时间小于60秒，认为应该执行
-        return next_run < 60
+        next_run = cron.get_next(datetime)
+
+        # 计算距离下一次执行的秒数
+        time_diff = (next_run - now).total_seconds()
+
+        # 如果下一次执行时间在60秒内，认为应该执行
+        return time_diff < 60
     except Exception as e:
         logging.error(f"Error parsing cron expression '{cron_expression}': {e}")
         return False
