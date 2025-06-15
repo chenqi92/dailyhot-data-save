@@ -9,6 +9,8 @@ from psycopg2 import sql
 from datetime import datetime, timedelta
 import logging
 import re
+from crontab import CronTab
+import threading
 
 # 设置日志
 logging.basicConfig(level=logging.INFO,
@@ -20,6 +22,10 @@ REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 REDIS_DB = int(os.getenv('REDIS_DB', 0))
 REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', '')  # Redis 密码
+# Redis 缓存时间（小时），默认1小时
+REDIS_CACHE_HOURS = int(os.getenv('REDIS_CACHE_HOURS', 1))
+# Cron 表达式，默认每30分钟执行一次
+CRON_SCHEDULE = os.getenv('CRON_SCHEDULE', '*/30 * * * *')
 TIMESCALEDB_HOST = os.getenv('TIMESCALEDB_HOST', 'localhost')
 TIMESCALEDB_PORT = int(os.getenv('TIMESCALEDB_PORT', 5432))
 TIMESCALEDB_USER = os.getenv('TIMESCALEDB_USER', 'postgres')
@@ -575,7 +581,7 @@ def insert_into_timescaledb(base_name, update_time, data_item, sort_order):
             year = datetime.fromtimestamp(item_timestamp).year
             conn, cursor, current_db = init_db_connection(year)
 
-def cache_in_redis_sorted_set(key, data_list):
+def cache_in_redis_sorted_set(key, data_list, update_time=None):
     """
     使用有序集合（Sorted Set）缓存 data 列表，使用 timestamp 作为分数
     在存储前清除旧数据
@@ -588,23 +594,38 @@ def cache_in_redis_sorted_set(key, data_list):
         # 添加新的数据到有序集合
         pipeline = redis_client.pipeline()
         for item in data_list:
-            # 确保timestamp不为None
-            timestamp = item.get('timestamp', 0)
-            if timestamp is None:
-                timestamp = 0
+            # 获取时间戳，确保即使值为None也转换为0
+            timestamp_value = item.get('timestamp')
+            timestamp = 0 if timestamp_value is None else timestamp_value
                 
             # 转换毫秒级时间戳为秒级
             if timestamp > 32503680000:  # 判断是否为毫秒级时间戳
                 timestamp = timestamp / 1000
                 
+            # 处理无效时间戳（与PostgreSQL逻辑保持一致）
+            current_timestamp = int(time.time())
+            # 允许的时间范围：1970年至当前时间后10年
+            if timestamp <= 0 or timestamp > (current_timestamp + 315360000):  # 当前时间 + 10年的秒数
+                # 对于无效时间戳，使用update_time的时间戳或当前时间
+                if update_time:
+                    timestamp = int(update_time.timestamp())
+                    logging.debug(f"Using update_time as timestamp for Redis item with title '{item.get('title')}'")
+                else:
+                    timestamp = current_timestamp
+                    logging.warning(f"Invalid timestamp {timestamp_value} for Redis item with title '{item.get('title')}', using current time instead")
+                
             # 确保item的所有值都不为None，将None转换为空字符串
             item_copy = {k: ('' if v is None else v) for k, v in item.items()}
+            # 更新item_copy中的timestamp为处理后的值
+            item_copy['timestamp'] = timestamp
             member = json.dumps(item_copy, ensure_ascii=False)
             pipeline.zadd(key, {member: timestamp})
         pipeline.execute()
 
-        redis_client.expire(key, 3600)
-        logging.info(f"Cached {len(data_list)} items in Redis sorted set with key: {key}")
+        # 设置缓存过期时间（小时转换为秒）
+        cache_expire_seconds = REDIS_CACHE_HOURS * 3600
+        redis_client.expire(key, cache_expire_seconds)
+        logging.info(f"Cached {len(data_list)} items in Redis sorted set with key: {key}, expires in {REDIS_CACHE_HOURS} hours")
 
         # 如果启用了第二个Redis，则也存储到第二个Redis
         if ENABLE_REDIS2 and redis_client2:
@@ -612,23 +633,34 @@ def cache_in_redis_sorted_set(key, data_list):
                 redis_client2.delete(key)
                 pipeline2 = redis_client2.pipeline()
                 for item in data_list:
-                    # 确保timestamp不为None
-                    timestamp = item.get('timestamp', 0)
-                    if timestamp is None:
-                        timestamp = 0
+                    # 获取时间戳，确保即使值为None也转换为0
+                    timestamp_value = item.get('timestamp')
+                    timestamp = 0 if timestamp_value is None else timestamp_value
                         
                     # 转换毫秒级时间戳为秒级
                     if timestamp > 32503680000:  # 判断是否为毫秒级时间戳
                         timestamp = timestamp / 1000
                         
+                    # 处理无效时间戳（与PostgreSQL逻辑保持一致）
+                    current_timestamp = int(time.time())
+                    # 允许的时间范围：1970年至当前时间后10年
+                    if timestamp <= 0 or timestamp > (current_timestamp + 315360000):  # 当前时间 + 10年的秒数
+                        # 对于无效时间戳，使用update_time的时间戳或当前时间
+                        if update_time:
+                            timestamp = int(update_time.timestamp())
+                        else:
+                            timestamp = current_timestamp
+                        
                     # 确保item的所有值都不为None，将None转换为空字符串
                     item_copy = {k: ('' if v is None else v) for k, v in item.items()}
+                    # 更新item_copy中的timestamp为处理后的值
+                    item_copy['timestamp'] = timestamp
                     member = json.dumps(item_copy, ensure_ascii=False)
                     pipeline2.zadd(key, {member: timestamp})
                 pipeline2.execute()
 
-                redis_client2.expire(key, 3600)
-                logging.info(f"Cached {len(data_list)} items in second Redis sorted set with key: {key}")
+                redis_client2.expire(key, cache_expire_seconds)
+                logging.info(f"Cached {len(data_list)} items in second Redis sorted set with key: {key}, expires in {REDIS_CACHE_HOURS} hours")
             except redis.exceptions.RedisError as e:
                 logging.error(f"Error caching data in second Redis: {e}")
     except redis.exceptions.RedisError as e:
@@ -702,19 +734,23 @@ def process_routes_periodic():
             logging.error(f"Error fetching data from {request_url}: {e}")
             continue
 
-        # 缓存数据到 Redis 有序集合
-        data_list = data.get('data', [])
-        cache_in_redis_sorted_set("allbs:news:" + key, data_list)
-
         # 提取 updateTime
         update_time_str = data.get('updateTime')
+        update_time = None
         if not update_time_str:
             logging.warning(f"No updateTime found in data for {name}")
-            continue
-        try:
-            update_time = datetime.fromisoformat(update_time_str.replace('Z', '+00:00')) + timedelta(hours=8)
-        except ValueError as e:
-            logging.error(f"Invalid updateTime format for {name}: {update_time_str}")
+        else:
+            try:
+                update_time = datetime.fromisoformat(update_time_str.replace('Z', '+00:00')) + timedelta(hours=8)
+            except ValueError as e:
+                logging.error(f"Invalid updateTime format for {name}: {update_time_str}")
+                update_time = None
+
+        # 缓存数据到 Redis 有序集合
+        data_list = data.get('data', [])
+        cache_in_redis_sorted_set("allbs:news:" + key, data_list, update_time)
+        
+        if update_time is None:
             continue
 
         # 处理 data 列表并插入到 TimescaleDB
@@ -733,17 +769,45 @@ def initialize():
         logging.error("Failed to initialize routes from /all")
         exit(1)
 
+def should_run_now(cron_expression):
+    """
+    检查当前时间是否符合cron表达式
+    """
+    try:
+        from crontab import CronTab
+        cron = CronTab(cron_expression)
+        # 获取下一次执行时间
+        next_run = cron.next(default_utc=False)
+        # 如果下一次执行时间小于60秒，认为应该执行
+        return next_run < 60
+    except Exception as e:
+        logging.error(f"Error parsing cron expression '{cron_expression}': {e}")
+        return False
+
 def run():
     """
-    主运行函数：初始化后进入循环，定期执行任务
+    主运行函数：初始化后进入循环，按照cron调度执行任务
     """
     initialize()
+    
+    logging.info(f"Starting periodic task with cron schedule: {CRON_SCHEDULE}")
+    
+    last_run_minute = -1
+    
     while True:
-        process_routes_periodic()
-        # 随机睡眠 30 分钟到 1 小时
-        sleep_time = random.randint(1800, 3600)
-        logging.info(f"Sleeping for {sleep_time} seconds")
-        time.sleep(sleep_time)
+        current_time = datetime.now()
+        current_minute = current_time.minute
+        
+        # 每分钟检查一次是否需要执行任务
+        if current_minute != last_run_minute:
+            last_run_minute = current_minute
+            
+            if should_run_now(CRON_SCHEDULE):
+                logging.info(f"Cron schedule triggered at {current_time}")
+                process_routes_periodic()
+        
+        # 每30秒检查一次
+        time.sleep(30)
 
 if __name__ == "__main__":
     run()
